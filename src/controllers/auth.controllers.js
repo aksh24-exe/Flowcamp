@@ -270,6 +270,96 @@ const refreshAccessToken = asyncHandler(async (req, res) => {
     throw new ApiError(401, "Invalid refreshToken");
   }
 });
-// const getCurrentUser = asyncHandler(async (req, res) => {});
 
-export { registerUser, login, logoutUser, getCurrentUser, verifyEmail };
+const forgetPasswordRequest = asyncHandler(async (req, res) => {
+  const { email } = req.body;
+  const user = await User.findOne({ email });
+  if (!user) {
+    throw new ApiError(404, "User does not exist");
+  }
+
+  const { unHashedToken, hashToken, tokenExpiry } =
+    user.generateTemporaryToken();
+
+  user.forgotPasswordToken = unHashedToken;
+  user.forgotPasswordExpiry = tokenExpiry;
+
+  await user.save({ validateBeforeSave: false });
+
+  await sendEmail({
+    email: (await user)?.email,
+    subject: "Password Reset Email",
+    mailgenContent: forgetPasswordMailgenContent(
+      (await user).username,
+      `${process.env.FORGOT_PASSWORD_REDIRECT_URL}/${unHashedToken}`,
+    ),
+  });
+
+  return res.status(200).json(new ApiResponse(200, {}, "Mail has been send"));
+});
+
+const resetForgetPassword = asyncHandler(async (req, res) => {
+  const { resetToken } = req.params;
+  const { password, confirmPassword } = req.body;
+
+  if (password !== confirmPassword) {
+    throw new ApiError(400, "Password and Confirm Password does not match");
+  }
+
+  let hashToken = crypto.createdUser("sha256").update(resetToken).digest("hex");
+
+  const user = await User.findOne({
+    forgotPasswordToken: hashToken,
+    forgotPasswordExpiry: { $gt: Date.now() },
+  });
+
+  if (!user) {
+    throw new ApiError(404, "User does not exist");
+  }
+
+  user.forgotPasswordExpiry = undefined;
+  user.forgotPasswordToken = undefined;
+
+  user.password = password;
+  await user.save({ validateBeforeSave: false });
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, {}, "Password has been updated"));
+});
+
+const changedCurrentPassword = asyncHandler(async (req, res) => {
+  const { oldPassword, newPassword, newConfirmPassword } = req.body;
+
+  if (newPassword !== newConfirmPassword) {
+    throw new ApiError(400, "Password and Confirm Password does not match");
+  }
+
+  const user = await User.findById(req.user._id);
+
+  const isPasswordCorrect = await user.isPasswordCorrect(oldPassword);
+
+  if (!isPasswordCorrect) {
+    throw new ApiError(400, "Old Password is incorrect");
+  }
+
+  user.password = newPassword;
+  await user.save({ validateBeforeSave: false });
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, {}, "Password has been updated"));
+});
+
+export {
+  registerUser,
+  login,
+  logoutUser,
+  getCurrentUser,
+  verifyEmail,
+  resendEmailVerification,
+  refreshAccessToken,
+  forgetPasswordRequest,
+  resetForgetPassword,
+  changedCurrentPassword,
+};
